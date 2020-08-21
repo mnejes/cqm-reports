@@ -7,15 +7,23 @@
     </effectiveTime>
     <!-- You can include multiple performers, each with an NPI, TIN, CCN. -->
     <performer typeCode="PRF">
-				<assignedEntity>
-					<!--This is the provider NPI-->
-					<!--NPI may not be applicable, hospitals may submit nullFlavor-->
-					<id root="2.16.840.1.113883.4.6" nullFlavor="NA" />
-					<!--TIN may not be applicable, hospitals may submit nullFlavor-->
-					<representedOrganization>
-						<id root="2.16.840.1.113883.4.2" nullFlavor="NA" />
-					</representedOrganization>
-				</assignedEntity>
-			</performer>
+                <time>
+                    <low nullFlavor='UNK'/>
+                    <high nullFlavor='UNK'/>
+                </time>
+                <assignedEntity>
+                    <id root="2.16.840.1.113883.4.6" extension=""/>
+                    <assignedPerson>
+                        <name>
+                            <given></given>
+                            <family></family>
+                        </name>
+                    </assignedPerson>
+                    <representedOrganization>
+                          
+                          
+                    </representedOrganization>
+                </assignedEntity>
+            </performer>
   </serviceEvent>
 </documentationOf>
