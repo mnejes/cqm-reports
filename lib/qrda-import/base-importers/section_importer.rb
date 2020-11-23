@@ -1,7 +1,7 @@
 module QRDA
   module Cat1
     class SectionImporter
-      attr_accessor :check_for_usable, :status_xpath, :code_xpath
+      attr_accessor :check_for_usable, :status_xpath, :code_xpath, :warnings, :codes, :codes_modifiers
 
       def initialize(entry_finder)
         @entry_finder = entry_finder
@@ -9,6 +9,9 @@ module QRDA
         @entry_id_map = {}
         @check_for_usable = true
         @entry_class = QDM::DataElement
+        @warnings = []
+        @codes = Set.new
+        @codes_modifiers = {}
       end
 
       # Traverses an HL7 CDA document passed in and creates an Array of Entry
@@ -41,7 +44,7 @@ module QRDA
         # This is the id found in the QRDA file
         entry_qrda_id = extract_id(entry_element, @id_xpath)
         # Create a hash to map all of entry.ids to the same QRDA ids. This will be used to merge QRDA entries
-        # that represent the same event. 
+        # that represent the same event.
         @entry_id_map["#{entry_qrda_id.value}_#{entry_qrda_id.namingSystem}"] ||= []
         @entry_id_map["#{entry_qrda_id.value}_#{entry_qrda_id.namingSystem}"] << entry.id
         entry.dataElementCodes = extract_codes(entry_element, @code_xpath)
@@ -80,6 +83,7 @@ module QRDA
 
       def code_if_present(code_element)
         return unless code_element && code_element['code'] && code_element['codeSystem']
+        @codes.add("#{code_element['code']}:#{code_element['codeSystem']}")
         QDM::Code.new(code_element['code'], code_element['codeSystem'])
       end
 
@@ -93,6 +97,9 @@ module QRDA
       end
 
       def extract_interval(parent_element, interval_xpath)
+        # nil if the time interval does not exist
+        return nil unless time_interval_exists(parent_element, interval_xpath)
+
         if parent_element.at_xpath("#{interval_xpath}/@value")
           low_time = DateTime.parse(parent_element.at_xpath(interval_xpath)['value'])
           high_time = DateTime.parse(parent_element.at_xpath(interval_xpath)['value'])
@@ -111,7 +118,30 @@ module QRDA
           low_time = Time.parse(parent_element.at_xpath("#{interval_xpath}/cda:center")['value'])
           high_time = Time.parse(parent_element.at_xpath("#{interval_xpath}/cda:center")['value'])
         end
+        if low_time && high_time && low_time > high_time
+          # pass warning: current code continues as expected, but adds warning
+          id_attr = parent_element.at_xpath(".//cda:id")&.attributes
+          id_str = id_attr ? "and id: #{id_attr['root']&.value}(root), #{id_attr['extension']&.value}(extension)" : ""
+          qrda_type = @entry_class.to_s.split("::")[1]
+          @warnings << ValidationError.new(message: "Interval with low time after high time. Located in element with QRDA type: #{qrda_type} #{id_str}",
+                                           location: parent_element.path)
+        end
+        if low_time.nil? && high_time.nil?
+          id_attr = parent_element.at_xpath(".//cda:id")&.attributes
+          id_str = id_attr ? "and id: #{id_attr['root']&.value}(root), #{id_attr['extension']&.value}(extension)" : ""
+          qrda_type = @entry_class.to_s.split("::")[1]
+          @warnings << ValidationError.new(message: "Interval with nullFlavor low time and nullFlavor high time. Located in element with QRDA type: #{qrda_type} #{id_str}",
+                                           location: parent_element.path)
+        end
         QDM::Interval.new(low_time, high_time).shift_dates(0)
+      end
+
+      def time_interval_exists(parent_element, interval_xpath)
+        # false if the time interval does not exist
+        return false unless parent_element.at_xpath(interval_xpath)
+        # false if the time element exists but has a null Flavor
+        return false if parent_element.at_xpath(interval_xpath)['nullFlavor']
+        true
       end
 
       def extract_time(parent_element, datetime_xpath)
@@ -128,6 +158,7 @@ module QRDA
         # If a Direct Reference Code isn't found, return nil
         return nil unless key
         # If a Direct Reference Code is found, return that code
+        @codes.add("#{key}:#{value[:code_system]}")
         QDM::Code.new(key, value[:code_system])
       end
 
@@ -153,7 +184,7 @@ module QRDA
         parent_element.xpath(@result_xpath).each do |elem|
           result << extract_result_value(elem)
         end
-        result.size > 1 ? result : result.first 
+        result.size > 1 ? result : result.first
       end
 
       def extract_result_value(value_element)
@@ -166,6 +197,11 @@ module QRDA
         elsif value_element['code'].present?
           return code_if_present(value_element)
         elsif value_element.text.present?
+          id_attr = value_element.parent.at_xpath(".//cda:id")&.attributes
+          id_str = id_attr ? "and id: #{id_attr['root']&.value}(root), #{id_attr['extension']&.value}(extension)" : ""
+          qrda_type = @entry_class.to_s.split("::")[1]
+          @warnings << ValidationError.new(message: "Value with string type found. When possible, it's best practice to use a coded value or scalar. Located in element with QRDA type: #{qrda_type} #{id_str}",
+                                           location: value_element.path)
           return value_element.text
         end
       end
@@ -176,16 +212,16 @@ module QRDA
         negation_indicator = parent_element['negationInd']
         # Return and do not set reason attribute if the entry is negated
         return nil if negation_indicator.eql?('true')
-        
-        reason_element.blank? ? nil : code_if_present(reason_element.first) 
+
+        reason_element.blank? ? nil : code_if_present(reason_element.first)
       end
 
       def extract_negation(parent_element, entry)
         negation_element = parent_element.xpath("./cda:entryRelationship[@typeCode='RSON']/cda:observation[cda:templateId/@root='2.16.840.1.113883.10.20.24.3.88']/cda:value")
         negation_indicator = parent_element['negationInd']
         # Return and do not set negationRationale attribute if the entry is not negated
-        return unless negation_indicator.eql?('true') 
-        
+        return unless negation_indicator.eql?('true')
+
         entry.negationRationale = code_if_present(negation_element.first) unless negation_element.blank?
         extract_negated_code(parent_element, entry)
       end
@@ -193,8 +229,18 @@ module QRDA
       def extract_negated_code(parent_element, entry)
         code_elements = parent_element.xpath(@code_xpath)
         code_elements.each do |code_element|
-          if code_element['nullFlavor'] == 'NA' && code_element['sdtc:valueSet']
-            entry.dataElementCodes = [{ code: code_element['sdtc:valueSet'], system: '1.2.3.4.5.6.7.8.9.10' }]
+          if code_element['nullFlavor'] == 'NA'
+            if code_element['sdtc:valueSet']
+              entry.dataElementCodes = [{ code: code_element['sdtc:valueSet'], system: '1.2.3.4.5.6.7.8.9.10' }]
+            else
+              # negated code is nullFlavored with no valueset
+              entry.dataElementCodes = [{ code: "NA", system: '1.2.3.4.5.6.7.8.9.10' }]
+              id_attr = parent_element.at_xpath(".//cda:id")&.attributes
+              id_str = id_attr ? "and id: #{id_attr['root']&.value}(root), #{id_attr['extension']&.value}(extension)" : ""
+              qrda_type = @entry_class.to_s.split("::")[1]
+              @warnings << ValidationError.new(message: "Negated code element contains nullFlavor code but no valueset. Located in element with QRDA type: #{qrda_type} #{id_str}.",
+                                               location: parent_element.path)
+            end
           end
         end
       end
@@ -226,7 +272,7 @@ module QRDA
           participant_element = facility_location_element.at_xpath("./cda:participantRole[@classCode='SDLOC']/cda:code")
           facility_location.code = code_if_present(participant_element)
           facility_location.locationPeriod = extract_interval(facility_location_element, './cda:time')
-          facility_locations << facility_location
+          facility_locations << facility_location if facility_location.code
         end
         facility_locations
       end

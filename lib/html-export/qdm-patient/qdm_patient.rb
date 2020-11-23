@@ -9,6 +9,36 @@ class QdmPatient < Mustache
     @include_style = include_style
     @patient = patient
     @qdmPatient = patient.qdmPatient
+    @patient_addresses = patient['addresses']
+    @patient_telecoms = patient['telecoms']
+  end
+
+  def patient_addresses
+    @patient_addresses ||= [CQM::Address.new(
+      use: 'HP',
+      street: ['202 Burlington Rd.'],
+      city: 'Bedford',
+      state: 'MA',
+      zip: '01730',
+      country: 'US'
+    )]
+    address_str = ""
+    @patient_addresses.each do |address|
+      # create formatted address
+      address_str += "<address>"
+      address['street'].each { |street| address_str += "#{street}<br>" }
+      address_str += "#{address['city']}, #{address['state']} #{address['zip']}<br> #{address['country']} </address>"
+    end
+    address_str
+  end
+
+  def patient_telecoms
+    @patient_telecoms ||= [CQM::Telecom.new(
+      use: 'HP',
+      value: '555-555-2003'
+    )]
+    # create formatted telecoms
+    @patient_telecoms.map { |telecom| "(#{telecom['use']}) #{telecom['value']}" }.join("<br>")
   end
 
   def include_style?
@@ -25,7 +55,7 @@ class QdmPatient < Mustache
   end
 
   def unit_string
-    return "#{self['value']} " unless self['unit']
+    return "#{self['value']} " if !self['unit'] || self['unit'] == '1'
     "#{self['value']} #{self['unit']}"
   end
 
@@ -61,11 +91,29 @@ class QdmPatient < Mustache
   end
 
   def code_for_element(element)
-    "#{element['code']} (#{HQMF::Util::CodeSystemHelper.code_system_for(element['system'])})"
+    "#{element['code']} (#{HQMF::Util::CodeSystemHelper.code_system_for(element['system'])})#{code_description(element)}"
   end
 
   def code_system_name
     HQMF::Util::CodeSystemHelper.code_system_for(self['system'])
+  end
+
+  def code_description(element = self)
+    has_descriptions = @patient.respond_to?(:code_description_hash) && !@patient.code_description_hash.empty?
+    # mongo keys cannot contain '.', so replace all '.', key example: '21112-8:2_16_840_1_113883_6_1'
+    return " - #{@patient.code_description_hash["#{element['code']}:#{element['system']}".tr('.', '_')]}" if has_descriptions
+    # no code description available
+    ""
+  end
+
+  def demographic_code_description(code)
+    # only have code, don't need code system
+    has_descriptions = code && @patient.respond_to?(:code_description_hash) && !@patient.code_description_hash.empty?
+    if has_descriptions
+      key = @patient.code_description_hash.keys.detect { |k| k.starts_with?("#{send(code)}:") }
+      return " - #{@patient.code_description_hash[key]}"
+    end
+    ""
   end
 
   def result_string
